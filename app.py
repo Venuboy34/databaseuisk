@@ -1,241 +1,530 @@
-import os
-import requests
-import json
-import psycopg2
-import psycopg2.extras
-from flask import Flask, request, jsonify, render_template, g
-from werkzeug.security import generate_password_hash, check_password_hash
-from functools import wraps
-from base64 import b64decode
-
-app = Flask(__name__)
-
-# --- Configuration ---
-DATABASE_URL = os.environ.get('DATABASE_URL') or "postgresql://<user>:<password>@<host>:<port>/<dbname>"
-TMDB_API_KEY = "52f6a75a38a397d940959b336801e1c3"
-ADMIN_USERNAME = "venura"
-ADMIN_PASSWORD_HASH = generate_password_hash("venura")
-
-# --- Database Connection ---
-def get_db():
-    if 'db' not in g:
-        try:
-            # Set sslmode='require' for secure connection to Neon Tech
-            g.db = psycopg2.connect(DATABASE_URL, sslmode='require')
-        except psycopg2.Error as e:
-            return None, str(e)
-    return g.db, None
-
-@app.teardown_appcontext
-def close_db(e=None):
-    db = g.pop('db', None)
-    if db is not None:
-        db.close()
-
-# --- Basic Authentication ---
-def check_auth(username, password):
-    return username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password)
-
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({'message': 'Authorization Required'}), 401, {'WWW-Authenticate': 'Basic realm="Login Required"'}
-        try:
-            auth_type, credentials = auth_header.split()
-            if auth_type.lower() == 'basic':
-                decoded_credentials = b64decode(credentials).decode('utf-8')
-                username, password = decoded_credentials.split(':', 1)
-                if check_auth(username, password):
-                    return f(*args, **kwargs)
-        except Exception:
-            pass
-        return jsonify({'message': 'Authorization Failed'}), 401, {'WWW-Authenticate': 'Basic realm="Login Required"'}
-    return decorated
-
-# --- TMDB API Helper ---
-def fetch_tmdb_data(tmdb_id, media_type):
-    url = ""
-    if media_type == 'movie':
-        url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=credits"
-    elif media_type == 'tv':
-        url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={TMDB_API_KEY}&append_to_response=credits"
-    
-    if not url:
-        return None
-
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        cast = []
-        for member in data['credits']['cast'][:10]:
-            cast.append({
-                "name": member.get("name"),
-                "character": member.get("character"),
-                "image": f"https://image.tmdb.org/t/p/original{member.get('profile_path')}" if member.get('profile_path') else None
-            })
-        
-        processed_data = {
-            'title': data.get('title') if media_type == 'movie' else data.get('name'),
-            'description': data.get('overview'),
-            'thumbnail': f"https://image.tmdb.org/t/p/original{data.get('poster_path')}" if data.get('poster_path') else None,
-            'release_date': data.get('release_date') if media_type == 'movie' else data.get('first_air_date'),
-            'language': data.get('original_language'),
-            'rating': data.get('vote_average'),
-            'cast_members': cast,
-            'total_seasons': data.get('number_of_seasons') if media_type == 'tv' else None
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Media</title>
+    <style>
+        /* General Styles */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1c1c1e;
+            color: #f0f0f0;
+            padding: 20px;
+            margin: 0;
+            line-height: 1.6;
         }
         
-        return processed_data
-    return None
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            background: #2c2c2e;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+        }
 
-# --- Main Public Routes ---
-@app.route("/")
-def home():
-    return render_template("index.html")
+        /* Header */
+        h1 {
+            text-align: center;
+            color: #e0e0e0;
+            border-bottom: 2px solid #3a3a3c;
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+        }
 
-@app.route("/api/docs")
-def api_docs():
-    return render_template("api_docs.html")
+        /* Form Elements */
+        .form-section {
+            background: #3a3a3c;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+        }
 
-# --- Admin Panel Routes (HTML/JS) ---
-@app.route("/admin")
-@requires_auth
-def admin_dashboard():
-    return render_template("admin_dashboard.html")
+        .form-group {
+            margin-bottom: 20px;
+        }
 
-@app.route("/admin/add_movie")
-@requires_auth
-def add_movie_page():
-    return render_template("add_movie.html")
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #b0b0b0;
+        }
 
-@app.route("/admin/add_tv")
-@requires_auth
-def add_tv_page():
-    return render_template("add_tv.html")
+        input[type="text"], input[type="number"], input[type="date"], textarea {
+            width: 100%;
+            padding: 12px;
+            box-sizing: border-box;
+            background: #4a4a4c;
+            border: 1px solid #555;
+            color: #fff;
+            border-radius: 6px;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
 
-@app.route("/admin/search_and_edit")
-@requires_auth
-def search_and_edit_page():
-    return render_template("search_and_edit.html")
+        input[type="text"]:focus, input[type="number"]:focus, input[type="date"]:focus, textarea:focus {
+            border-color: #6a11cb;
+            box-shadow: 0 0 0 2px rgba(106, 17, 203, 0.3);
+            outline: none;
+        }
 
-@app.route("/admin/edit")
-@requires_auth
-def edit_media_page():
-    return render_template("edit_media.html")
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
 
-# --- Public API Endpoints ---
-@app.route("/api/media", methods=["GET"])
-def get_all_media():
-    conn, error = get_db()
-    if error:
-        return jsonify({"message": "Database connection error", "error": error}), 500
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cur.execute("SELECT * FROM media ORDER BY id DESC;")
-    media = cur.fetchall()
-    return jsonify([dict(row) for row in media])
+        /* Buttons */
+        .btn-primary, .btn-secondary {
+            border: none;
+            padding: 12px 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: transform 0.2s, background-color 0.2s;
+            text-transform: uppercase;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(90deg, #6a11cb 0%, #2575fc 100%);
+            color: #fff;
+            width: 100%;
+            margin-top: 20px;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            opacity: 0.9;
+        }
 
-@app.route("/api/media/<int:media_id>", methods=["GET"])
-def get_single_media(media_id):
-    conn, error = get_db()
-    if error:
-        return jsonify({"message": "Database connection error", "error": error}), 500
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cur.execute("SELECT * FROM media WHERE id = %s;", (media_id,))
-    media = cur.fetchone()
-    if media:
-        return jsonify(dict(media))
-    return jsonify({"message": "Media not found"}), 404
+        .btn-secondary {
+            background-color: #555;
+            color: #fff;
+        }
 
-# --- Admin API Endpoints ---
-@app.route("/api/admin/tmdb_fetch", methods=["POST"])
-@requires_auth
-def tmdb_fetch_api():
-    data = request.json
-    tmdb_id = data.get("tmdb_id")
-    media_type = data.get("media_type")
-    
-    if not tmdb_id or not media_type:
-        return jsonify({"message": "TMDB ID and media type are required"}), 400
-    
-    tmdb_data = fetch_tmdb_data(tmdb_id, media_type)
-    if tmdb_data:
-        return jsonify(tmdb_data), 200
-    
-    return jsonify({"message": "Failed to fetch data from TMDB"}), 404
+        .btn-secondary:hover {
+            background-color: #666;
+            transform: translateY(-2px);
+        }
 
-@app.route("/api/admin/media", methods=["POST"])
-@requires_auth
-def add_media():
-    data = request.json
-    conn, error = get_db()
-    if error:
-        return jsonify({"message": "Database connection error", "error": error}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO media (type, title, description, thumbnail, release_date, language, rating, cast_members, video_links, download_links, total_seasons, seasons)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-        """, (
-            data.get('type'), data.get('title'), data.get('description'), data.get('thumbnail'),
-            data.get('release_date'), data.get('language'), data.get('rating'),
-            json.dumps(data.get('cast_members')), json.dumps(data.get('video_links')), json.dumps(data.get('download_links')),
-            data.get('total_seasons'), json.dumps(data.get('seasons'))
-        ))
-        media_id = cur.fetchone()[0]
-        conn.commit()
-        return jsonify({"message": "Media added successfully", "id": media_id}), 201
-    except (psycopg2.DatabaseError, json.JSONDecodeError) as e:
-        conn.rollback()
-        return jsonify({"message": "Error adding media", "error": str(e)}), 400
+        .remove-btn {
+            background: #ff4d4d;
+            color: #fff;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .remove-btn:hover {
+            background: #e60000;
+        }
 
-@app.route("/api/admin/media/<int:media_id>", methods=["PUT"])
-@requires_auth
-def update_media(media_id):
-    data = request.json
-    conn, error = get_db()
-    if error:
-        return jsonify({"message": "Database connection error", "error": error}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            UPDATE media SET
-                type = %s, title = %s, description = %s, thumbnail = %s, release_date = %s,
-                language = %s, rating = %s, cast_members = %s, video_links = %s, download_links = %s,
-                total_seasons = %s, seasons = %s
-            WHERE id = %s;
-        """, (
-            data.get('type'), data.get('title'), data.get('description'), data.get('thumbnail'),
-            data.get('release_date'), data.get('language'), data.get('rating'),
-            json.dumps(data.get('cast_members')), json.dumps(data.get('video_links')), json.dumps(data.get('download_links')),
-            data.get('total_seasons'), json.dumps(data.get('seasons')), media_id
-        ))
-        conn.commit()
-        if cur.rowcount == 0:
-            return jsonify({"message": "Media not found"}), 404
-        return jsonify({"message": "Media updated successfully"}), 200
-    except (psycopg2.DatabaseError, json.JSONDecodeError) as e:
-        conn.rollback()
-        return jsonify({"message": "Error updating media", "error": str(e)}), 400
+        /* TV Series Specific Styles */
+        .season-container {
+            border: 1px dashed #555;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            background-color: #2c2c2e;
+        }
+        
+        .episode-container {
+            margin-top: 15px;
+            padding-left: 20px;
+            border-left: 2px solid #6a11cb;
+        }
 
-@app.route("/api/admin/media/<int:media_id>", methods=["DELETE"])
-@requires_auth
-def delete_media(media_id):
-    conn, error = get_db()
-    if error:
-        return jsonify({"message": "Database connection error", "error": error}), 500
-    cur = conn.cursor()
-    try:
-        cur.execute("DELETE FROM media WHERE id = %s;", (media_id,))
-        conn.commit()
-        if cur.rowcount == 0:
-            return jsonify({"message": "Media not found"}), 404
-        return jsonify({"message": "Media deleted successfully"}), 200
-    except psycopg2.DatabaseError as e:
-        conn.rollback()
-        return jsonify({"message": "Error deleting media", "error": str(e)}), 400
+        .episode-row {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .episode-row input {
+            flex-grow: 1;
+        }
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        /* Utility */
+        .error-message {
+            text-align: center;
+            color: #ff4d4d;
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-top: 30px;
+        }
+
+        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✏️ Edit Media</h1>
+        
+        <div id="loading-error" class="error-message" style="display: none;">
+            Error: Cannot load media. Please ensure the ID is valid and the backend is running.
+        </div>
+        
+        <form id="edit-media-form">
+            <input type="hidden" id="media-id" name="id">
+            
+            <div class="form-section">
+                <h2>Media Details</h2>
+                <div class="form-group">
+                    <label for="type">Media Type:</label>
+                    <input type="text" id="type" name="type" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="title">Title:</label>
+                    <input type="text" id="title" name="title" required>
+                </div>
+                <div class="form-group">
+                    <label for="description">Description:</label>
+                    <textarea id="description" name="description"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="thumbnail">Thumbnail URL:</label>
+                    <input type="text" id="thumbnail" name="thumbnail">
+                </div>
+                <div class="form-group">
+                    <label for="release_date">Release Date:</label>
+                    <input type="date" id="release_date" name="release_date">
+                </div>
+                <div class="form-group">
+                    <label for="language">Language:</label>
+                    <input type="text" id="language" name="language">
+                </div>
+                <div class="form-group">
+                    <label for="rating">Rating:</label>
+                    <input type="number" step="0.1" id="rating" name="rating">
+                </div>
+                <div class="form-group">
+                    <label for="cast_members">Cast (JSON):</label>
+                    <textarea id="cast_members" name="cast_members"></textarea>
+                </div>
+            </div>
+            
+            <div id="dynamic-fields"></div>
+
+            <button type="submit" class="btn-primary">Update Media</button>
+        </form>
+    </div>
+
+    <script>
+        const API_BASE_URL = window.location.origin + '/api/media';
+        const ADMIN_API_BASE_URL = window.location.origin + '/api/admin';
+        const AUTH_HEADER = 'Basic ' + btoa('venura:venura');
+        let seasonNumberCounter = 0;
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const mediaId = urlParams.get('id');
+            if (!mediaId) {
+                document.getElementById('loading-error').style.display = 'block';
+                return;
+            }
+            document.getElementById('media-id').value = mediaId;
+            await loadMediaData(mediaId);
+        });
+
+        async function loadMediaData(id) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/${id}`);
+                if (!response.ok) {
+                    throw new Error('Media not found.');
+                }
+                const media = await response.json();
+                populateForm(media);
+            } catch (err) {
+                console.error("Failed to load media:", err);
+                document.getElementById('loading-error').style.display = 'block';
+                // Redirect after a short delay to give user time to see the error
+                setTimeout(() => {
+                     window.location.href = '/admin/search_and_edit';
+                }, 3000);
+            }
+        }
+
+        function populateForm(media) {
+            document.getElementById('type').value = media.type || '';
+            document.getElementById('title').value = media.title || '';
+            document.getElementById('description').value = media.description || '';
+            document.getElementById('thumbnail').value = media.thumbnail || '';
+            document.getElementById('release_date').value = media.release_date || '';
+            document.getElementById('language').value = media.language || '';
+            document.getElementById('rating').value = media.rating || '';
+            
+            // Handle cast_members JSON
+            try {
+                document.getElementById('cast_members').value = JSON.stringify(media.cast_members || [], null, 2);
+            } catch (e) {
+                document.getElementById('cast_members').value = '[]';
+            }
+
+            const dynamicFieldsContainer = document.getElementById('dynamic-fields');
+            dynamicFieldsContainer.innerHTML = '';
+
+            if (media.type === 'movie') {
+                dynamicFieldsContainer.innerHTML = `
+                    <div class="form-section">
+                        <h2>🔗 Video & Download Links</h2>
+                        <div class="form-group">
+                            <label for="video_720p">Video 720p URL:</label>
+                            <input type="text" id="video_720p" name="video_720p">
+                        </div>
+                        <div class="form-group">
+                            <label for="video_1080p">Video 1080p URL:</label>
+                            <input type="text" id="video_1080p" name="video_1080p">
+                        </div>
+                        <div class="form-group">
+                            <label for="video_2160p">Video 2160p URL:</label>
+                            <input type="text" id="video_2160p" name="video_2160p">
+                        </div>
+                        <hr style="border-color: #555; margin: 20px 0;">
+                        <div class="form-group">
+                            <label for="download_720p">Download 720p URL:</label>
+                            <input type="text" id="download_720p" name="download_720p">
+                        </div>
+                        <div class="form-group">
+                            <label for="download_1080p">Download 1080p URL:</label>
+                            <input type="text" id="download_1080p" name="download_1080p">
+                        </div>
+                        <div class="form-group">
+                            <label for="download_2160p">Download 2160p URL:</label>
+                            <input type="text" id="download_2160p" name="download_2160p">
+                        </div>
+                    </div>
+                `;
+
+                // Populate movie fields safely
+                if (media.video_links && typeof media.video_links === 'object') {
+                    document.getElementById('video_720p').value = media.video_links.video_720p || '';
+                    document.getElementById('video_1080p').value = media.video_links.video_1080p || '';
+                    document.getElementById('video_2160p').value = media.video_links.video_2160p || '';
+                }
+
+                if (media.download_links && typeof media.download_links === 'object') {
+                    document.getElementById('download_720p').value = 
+                        (media.download_links.download_720p && media.download_links.download_720p.url) || '';
+                    document.getElementById('download_1080p').value = 
+                        (media.download_links.download_1080p && media.download_links.download_1080p.url) || '';
+                    document.getElementById('download_2160p').value = 
+                        (media.download_links.download_2160p && media.download_links.download_2160p.url) || '';
+                }
+            } else if (media.type === 'tv') {
+                dynamicFieldsContainer.innerHTML = `
+                    <div class="form-section">
+                        <h2>TV Series Details</h2>
+                        <div class="form-group">
+                            <label for="total_seasons">Total Seasons:</label>
+                            <input type="number" id="total_seasons" name="total_seasons" value="${media.total_seasons || 0}">
+                        </div>
+                        <div id="seasons-container"></div>
+                        <button type="button" class="btn-secondary" onclick="addSeason()">Add New Season</button>
+                    </div>
+                `;
+                
+                // Populate TV series seasons
+                if (media.seasons && typeof media.seasons === 'object') {
+                    const seasonKeys = Object.keys(media.seasons).sort((a, b) => {
+                        const aNum = parseInt(a.split('_')[1]) || 0;
+                        const bNum = parseInt(b.split('_')[1]) || 0;
+                        return aNum - bNum;
+                    });
+                    seasonKeys.forEach(key => {
+                        const season = media.seasons[key];
+                        if (season) {
+                            addSeason(season);
+                        }
+                    });
+                }
+            }
+        }
+
+        function addSeason(seasonData = null) {
+            seasonNumberCounter++;
+            const container = document.getElementById('seasons-container');
+            const seasonDiv = document.createElement('div');
+            seasonDiv.classList.add('season-container');
+            const seasonNumber = seasonData ? seasonData.season_number : seasonNumberCounter;
+            seasonDiv.innerHTML = `
+                <h3>Season ${seasonNumber} <button type="button" class="remove-btn" onclick="removeSeason(this)">Remove</button></h3>
+                <div class="form-group">
+                    <label>Episodes</label>
+                    <div class="episode-container" data-season-number="${seasonNumber}"></div>
+                </div>
+                <button type="button" class="btn-secondary" onclick="addEpisode(this)">+ Add Episode</button>
+            `;
+            container.appendChild(seasonDiv);
+            
+            // Add episodes if they exist
+            if (seasonData && seasonData.episodes && Array.isArray(seasonData.episodes)) {
+                seasonData.episodes.forEach(episode => {
+                    addEpisode(seasonDiv.querySelector('.btn-secondary'), episode);
+                });
+            }
+        }
+
+        function removeSeason(button) {
+            button.closest('.season-container').remove();
+        }
+
+        function addEpisode(button, episodeData = null) {
+            const episodeContainer = button.previousElementSibling.querySelector('.episode-container');
+            const seasonNumber = episodeContainer.dataset.seasonNumber;
+            const episodeCount = episodeContainer.children.length + 1;
+            const episodeDiv = document.createElement('div');
+            episodeDiv.classList.add('episode-row');
+            
+            const episodeName = episodeData ? (episodeData.episode_name || '') : '';
+            const videoLink = episodeData ? (episodeData.video_720p || '') : '';
+            const downloadLink = episodeData ? 
+                (episodeData.download_720p && episodeData.download_720p.url ? episodeData.download_720p.url : '') : '';
+            
+            episodeDiv.innerHTML = `
+                <input type="text" name="season_${seasonNumber}_episode_${episodeCount}_name" placeholder="Episode Name" value="${episodeName}" required>
+                <input type="text" name="season_${seasonNumber}_episode_${episodeCount}_video" placeholder="Video Link" value="${videoLink}">
+                <input type="text" name="season_${seasonNumber}_episode_${episodeCount}_download" placeholder="Download Link" value="${downloadLink}">
+                <button type="button" class="remove-btn" onclick="removeEpisode(this)">Remove</button>
+            `;
+            episodeContainer.appendChild(episodeDiv);
+        }
+
+        function removeEpisode(button) {
+            button.closest('.episode-row').remove();
+        }
+
+        // Enhanced form submission with better error handling
+        document.getElementById('edit-media-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const mediaId = document.getElementById('media-id').value;
+            const mediaType = document.getElementById('type').value;
+
+            // Add loading state
+            form.classList.add('loading');
+            const submitButton = form.querySelector('.btn-primary');
+            const originalText = submitButton.textContent;
+            submitButton.textContent = 'Updating...';
+
+            // Validate and parse cast_members JSON
+            let castMembers = [];
+            try {
+                const castText = form.cast_members.value.trim();
+                if (castText) {
+                    castMembers = JSON.parse(castText);
+                }
+                if (!Array.isArray(castMembers)) {
+                    throw new Error('Cast members must be an array');
+                }
+            } catch (e) {
+                alert('Invalid JSON format in Cast members field. Please check the format.');
+                form.classList.remove('loading');
+                submitButton.textContent = originalText;
+                return;
+            }
+
+            const data = {
+                type: mediaType,
+                title: form.title.value.trim(),
+                description: form.description.value.trim(),
+                thumbnail: form.thumbnail.value.trim() || null,
+                release_date: form.release_date.value || null,
+                language: form.language.value.trim() || null,
+                rating: form.rating.value ? parseFloat(form.rating.value) : null,
+                cast_members: castMembers
+            };
+
+            if (mediaType === 'movie') {
+                data.video_links = {
+                    video_720p: form.video_720p.value.trim() || null,
+                    video_1080p: form.video_1080p.value.trim() || null,
+                    video_2160p: form.video_2160p.value.trim() || null
+                };
+                data.download_links = {
+                    download_720p: form.download_720p.value.trim() ? { url: form.download_720p.value.trim(), file_type: 'webrip' } : null,
+                    download_1080p: form.download_1080p.value.trim() ? { url: form.download_1080p.value.trim(), file_type: 'webrip' } : null,
+                    download_2160p: form.download_2160p.value.trim() ? { url: form.download_2160p.value.trim(), file_type: 'webrip' } : null
+                };
+                data.total_seasons = null;
+                data.seasons = null;
+            } else if (mediaType === 'tv') {
+                const seasons = {};
+                const seasonContainers = document.querySelectorAll('.season-container');
+                let seasonCounter = 1;
+                
+                seasonContainers.forEach((seasonDiv) => {
+                    const episodes = [];
+                    const episodeRows = seasonDiv.querySelectorAll('.episode-row');
+                    
+                    episodeRows.forEach((row, index) => {
+                        const episodeNumber = index + 1;
+                        const name = row.querySelector(`input[placeholder="Episode Name"]`).value.trim();
+                        const video = row.querySelector(`input[placeholder="Video Link"]`).value.trim();
+                        const download = row.querySelector(`input[placeholder="Download Link"]`).value.trim();
+                        
+                        if (name) { // Only add episodes with names
+                            episodes.push({
+                                episode_number: episodeNumber,
+                                episode_name: name,
+                                video_720p: video || null,
+                                download_720p: download ? { url: download, file_type: 'webrip' } : null
+                            });
+                        }
+                    });
+                    
+                    if (episodes.length > 0) { // Only add seasons with episodes
+                        seasons[`season_${seasonCounter}`] = {
+                            season_number: seasonCounter,
+                            total_episodes: episodes.length,
+                            episodes: episodes
+                        };
+                        seasonCounter++;
+                    }
+                });
+                
+                data.total_seasons = Object.keys(seasons).length;
+                data.seasons = seasons;
+                data.video_links = null;
+                data.download_links = null;
+            }
+
+            try {
+                console.log('Sending data:', JSON.stringify(data, null, 2)); // Debug log
+                
+                const response = await fetch(`${ADMIN_API_BASE_URL}/media/${mediaId}`, {
+                    method: 'PUT',
+                    headers: { 
+                        'Content-Type': 'application/json', 
+                        'Authorization': AUTH_HEADER 
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('Media updated successfully!');
+                    window.location.href = '/admin/search_and_edit';
+                } else {
+                    console.error('Server response:', result); // Debug log
+                    alert(`Error: ${result.message || result.error || 'Unknown error occurred'}`);
+                }
+            } catch (err) {
+                console.error('Network error:', err); // Debug log
+                alert('Network error occurred. Please check your connection and try again.');
+            } finally {
+                // Remove loading state
+                form.classList.remove('loading');
+                submitButton.textContent = originalText;
+            }
+        });
+    </script>
+</body>
+</html>
