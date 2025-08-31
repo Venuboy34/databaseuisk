@@ -7,8 +7,12 @@ from flask import Flask, request, jsonify, render_template, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from base64 import b64decode
+from flask_cors import CORS
 
 app = Flask(__name__)
+
+# Enable CORS for all routes to allow cross-origin requests from websites and apps
+CORS(app)
 
 # --- Configuration ---
 DATABASE_URL = os.environ.get('DATABASE_URL') or "postgresql://<user>:<password>@<host>:<port>/<dbname>"
@@ -238,4 +242,5 @@ def delete_media(media_id):
         return jsonify({"message": "Error deleting media", "error": str(e)}), 400
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # For production, set host='0.0.0.0' to allow external connections
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
