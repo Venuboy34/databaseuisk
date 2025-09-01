@@ -11,6 +11,9 @@
         label { display: block; margin-bottom: 5px; font-weight: bold; }
         input[type="text"], input[type="number"], input[type="date"], textarea { width: 100%; padding: 8px; box-sizing: border-box; background: #4a505b; border: 1px solid #555; color: #fff; border-radius: 5px; }
         .btn-primary { background: #6a11cb; color: #fff; border: none; padding: 10px 15px; cursor: pointer; border-radius: 5px; }
+        .tag-input-container { display: flex; flex-wrap: wrap; gap: 5px; background: #4a505b; padding: 5px; border-radius: 5px; border: 1px solid #555; }
+        .tag { background: #6a11cb; color: #fff; padding: 5px 10px; border-radius: 15px; display: flex; align-items: center; }
+        .tag-close { margin-left: 5px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -51,6 +54,12 @@
                 <label for="cast_members">Cast (JSON):</label>
                 <textarea id="cast_members" name="cast_members" rows="5"></textarea>
             </div>
+            
+            <div class="form-group">
+                <label for="genres">Genres (from TMDB):</label>
+                <input type="text" id="genres-input" placeholder="Enter genres...">
+                <div id="genres-container" class="tag-input-container"></div>
+            </div>
 
             <h2>🔗 Video Links</h2>
             <div class="form-group">
@@ -87,7 +96,22 @@
     <script>
         const ADMIN_API_BASE_URL = window.location.origin + '/api/admin';
         const AUTH_HEADER = 'Basic ' + btoa('venura:venura');
+        const genresContainer = document.getElementById('genres-container');
 
+        // Function to create a genre tag
+        function createGenreTag(genre) {
+            const tag = document.createElement('span');
+            tag.classList.add('tag');
+            tag.textContent = genre;
+            const closeBtn = document.createElement('span');
+            closeBtn.classList.add('tag-close');
+            closeBtn.textContent = 'x';
+            closeBtn.onclick = () => tag.remove();
+            tag.appendChild(closeBtn);
+            genresContainer.appendChild(tag);
+        }
+
+        // Fetch genres from TMDB and populate form
         async function fetchTmdbData() {
             const tmdbId = document.getElementById('tmdb-id').value;
             if (!tmdbId) {
@@ -111,6 +135,12 @@
                     document.getElementById('language').value = data.language;
                     document.getElementById('rating').value = data.rating;
                     document.getElementById('cast_members').value = JSON.stringify(data.cast_members, null, 2);
+                    
+                    // Populate genres
+                    genresContainer.innerHTML = '';
+                    if (data.genres && data.genres.length > 0) {
+                        data.genres.forEach(genre => createGenreTag(genre));
+                    }
                 } else {
                     alert(`Error: ${data.message}`);
                 }
@@ -122,6 +152,10 @@
         document.getElementById('add-movie-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const form = e.target;
+
+            // Get all genre tags and convert to an array
+            const genres = Array.from(genresContainer.children).map(tag => tag.textContent.slice(0, -1).trim());
+
             const data = {
                 type: 'movie',
                 title: form.title.value,
@@ -131,6 +165,7 @@
                 language: form.language.value,
                 rating: parseFloat(form.rating.value) || null,
                 cast_members: JSON.parse(form.cast_members.value || '[]'),
+                genres: genres, // Add genres here
                 video_links: {},
                 download_links: {}
             };
@@ -167,6 +202,7 @@
                 if (response.ok) {
                     alert('Movie added successfully!');
                     form.reset();
+                    genresContainer.innerHTML = '';
                 } else {
                     alert(`Error: ${result.message}`);
                 }
@@ -174,7 +210,15 @@
                 alert('An unexpected error occurred during movie creation.');
             }
         });
+
+        // Event listener for adding genres via the input field
+        document.getElementById('genres-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && e.target.value.trim() !== '') {
+                e.preventDefault();
+                createGenreTag(e.target.value.trim());
+                e.target.value = '';
+            }
+        });
     </script>
 </body>
-    </html>
-    
+</html>
