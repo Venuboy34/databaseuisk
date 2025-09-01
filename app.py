@@ -88,11 +88,19 @@ def fetch_tmdb_data(tmdb_id, media_type):
             'language': data.get('original_language'),
             'rating': data.get('vote_average'),
             'cast_members': cast,
-            'total_seasons': data.get('number_of_seasons') if media_type == 'tv' else None
+            'total_seasons': data.get('number_of_seasons') if media_type == 'tv' else None,
+            'genres': [g['name'] for g in data.get('genres', [])] # Extract genres
         }
         
         return processed_data
     return None
+
+def fetch_genres(media_type):
+    url = f"https://api.themoviedb.org/3/genre/{media_type}/list?api_key={TMDB_API_KEY}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json().get('genres', [])
+    return []
 
 # --- Main Public Routes ---
 @app.route("/")
@@ -152,6 +160,15 @@ def get_single_media(media_id):
         return jsonify(dict(media))
     return jsonify({"message": "Media not found"}), 404
 
+@app.route("/api/genres", methods=["GET"])
+def get_all_genres():
+    movie_genres = fetch_genres('movie')
+    tv_genres = fetch_genres('tv')
+    # Combine and deduplicate genres
+    all_genres = {genre['name'] for genre in movie_genres}
+    all_genres.update({genre['name'] for genre in tv_genres})
+    return jsonify(sorted(list(all_genres)))
+
 # --- Admin API Endpoints ---
 @app.route("/api/admin/tmdb_fetch", methods=["POST"])
 @requires_auth
@@ -179,14 +196,14 @@ def add_media():
     cur = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO media (type, title, description, thumbnail, release_date, language, rating, cast_members, video_links, download_links, total_seasons, seasons)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO media (type, title, description, thumbnail, release_date, language, rating, cast_members, video_links, download_links, total_seasons, seasons, genres)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
         """, (
             data.get('type'), data.get('title'), data.get('description'), data.get('thumbnail'),
             data.get('release_date'), data.get('language'), data.get('rating'),
             json.dumps(data.get('cast_members')), json.dumps(data.get('video_links')), json.dumps(data.get('download_links')),
-            data.get('total_seasons'), json.dumps(data.get('seasons'))
+            data.get('total_seasons'), json.dumps(data.get('seasons')), json.dumps(data.get('genres')) # Added genres here
         ))
         media_id = cur.fetchone()[0]
         conn.commit()
@@ -208,13 +225,13 @@ def update_media(media_id):
             UPDATE media SET
                 type = %s, title = %s, description = %s, thumbnail = %s, release_date = %s,
                 language = %s, rating = %s, cast_members = %s, video_links = %s, download_links = %s,
-                total_seasons = %s, seasons = %s
+                total_seasons = %s, seasons = %s, genres = %s
             WHERE id = %s;
         """, (
             data.get('type'), data.get('title'), data.get('description'), data.get('thumbnail'),
             data.get('release_date'), data.get('language'), data.get('rating'),
             json.dumps(data.get('cast_members')), json.dumps(data.get('video_links')), json.dumps(data.get('download_links')),
-            data.get('total_seasons'), json.dumps(data.get('seasons')), media_id
+            data.get('total_seasons'), json.dumps(data.get('seasons')), json.dumps(data.get('genres')), media_id # Added genres here
         ))
         conn.commit()
         if cur.rowcount == 0:
