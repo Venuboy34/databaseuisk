@@ -52,6 +52,10 @@
                 <input type="number" step="0.1" id="rating" name="rating">
             </div>
             <div class="form-group">
+                <label for="genres">Genres (comma-separated):</label>
+                <input type="text" id="genres" name="genres">
+            </div>
+            <div class="form-group">
                 <label for="cast-members">Cast (JSON):</label>
                 <textarea id="cast-members" name="cast_members"></textarea>
             </div>
@@ -126,6 +130,8 @@
                     document.getElementById('release-date').value = data.release_date;
                     document.getElementById('language').value = data.language;
                     document.getElementById('rating').value = data.rating;
+                    // Join genre names into a comma-separated string
+                    document.getElementById('genres').value = data.genres.join(', ');
                     document.getElementById('cast-members').value = JSON.stringify(data.cast_members, null, 2);
                 } else {
                     const error = await response.json();
@@ -145,8 +151,10 @@
             for (let i = 1; i <= totalSeasons; i++) {
                 const episodes = [];
                 const episodeInputs = document.querySelectorAll(`[name^="season_${i}_episode_"]`);
-                for (let j = 0; j < episodeInputs.length / 3; j++) {
-                    const episodeNumber = j + 1;
+                
+                // Group the episode inputs together (name, video, download)
+                for (let j = 0; j < episodeInputs.length; j += 3) {
+                    const episodeNumber = (j / 3) + 1;
                     const name = formData.get(`season_${i}_episode_${episodeNumber}_name`);
                     const video = formData.get(`season_${i}_episode_${episodeNumber}_video`);
                     const download = formData.get(`season_${i}_episode_${episodeNumber}_download`);
@@ -154,8 +162,8 @@
                     episodes.push({
                         episode_number: episodeNumber,
                         episode_name: name,
-                        video_720p: video, // Simplified for this example
-                        download_720p: { url: download, file_type: 'webrip' } // Simplified
+                        video_720p: video,
+                        download_720p: { url: download, file_type: 'webrip' }
                     });
                 }
                 seasons[`season_${i}`] = {
@@ -164,6 +172,10 @@
                     episodes: episodes
                 };
             }
+            
+            // Get genres and split the comma-separated string into an array
+            const genresInput = formData.get('genres');
+            const genresArray = genresInput ? genresInput.split(',').map(g => g.trim()) : [];
 
             const data = {
                 type: 'tv',
@@ -173,6 +185,7 @@
                 release_date: formData.get('release_date'),
                 language: formData.get('language'),
                 rating: parseFloat(formData.get('rating')),
+                genres: genresArray, // Now includes the genres
                 cast_members: JSON.parse(formData.get('cast_members') || '[]'),
                 total_seasons: totalSeasons,
                 seasons: seasons
